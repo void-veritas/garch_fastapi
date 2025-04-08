@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GARCH Volatility Forecast - {{ symbol }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .chart-container { width: 80%; max-width: 900px; margin: auto; }
+    </style>
+</head>
+<body>
+    <h1>GARCH Volatility Forecast</h1>
+    <h2>Symbol: {{ symbol }}</h2>
+    <h3>Forecast Horizon: {{ horizon }} days</h3>
+
+    <div class="chart-container">
+        <canvas id="volatilityChart"></canvas>
+    </div>
+
+    <script>
+        const ctx = document.getElementById('volatilityChart').getContext('2d');
+        // Data passed from FastAPI via Jinja2 template
+        const forecastData = {{ forecast_data | safe }};
+        
+        // Extract labels (Dates) and data points (Volatility)
+        const labels = forecastData.map(item => item.Date);
+        const dataPoints = forecastData.map(item => item.Forecasted_Annualized_Volatility);
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Forecasted Annualized Volatility (%)',
+                    data: dataPoints,
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        title: {
+                            display: true,
+                            text: 'Annualized Volatility (%)'
+                        }
+                    },
+                    x: {
+                         title: {
+                            display: true,
+                            text: 'Date'
+                        }
+                    }
+                },
+                responsive: true,
+                maintainAspectRatio: true
+            }
+        });
+    </script>
+
+</body>
+</html> 

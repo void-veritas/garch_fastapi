@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+arch
+requests
+pandas
+python-dotenv
+numpy
+pydantic-settings
+jinja2 
