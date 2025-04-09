@@ -1,11 +1,7 @@
 from fastapi import FastAPI
-from fastapi.templating import Jinja2Templates
 from app.routers import data, forecast
 
 app = FastAPI(title="GARCH Volatility Forecast API")
-
-# Configure Jinja2Templates
-templates = Jinja2Templates(directory="templates")
 
 
 @app.get("/", tags=["General"])

@@ -6,4 +6,5 @@ pandas
 python-dotenv
 numpy
 pydantic-settings
-jinja2 
+jinja2
+tqdm 
