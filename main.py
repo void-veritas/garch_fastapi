@@ -1,5 +1,9 @@
 from fastapi import FastAPI
 from app.routers import data, forecast
+from app.db_init import init_db
+
+# Initialize the database
+init_db()
 
 app = FastAPI(title="GARCH Volatility Forecast API")
 

@@ -7,4 +7,6 @@ python-dotenv
 numpy
 pydantic-settings
 jinja2
-tqdm 
+tqdm
+sqlalchemy
+alembic 

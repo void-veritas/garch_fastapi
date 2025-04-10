@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from app.services import garch_service, data_service
+from sqlalchemy.orm import Session
+from app.services import garch_service, data_service, db_service
 # Import Settings, get_settings, and templates from config
-from app.config import Settings, get_settings, templates
+from app.config import Settings, get_settings, templates, get_db
 import pandas as pd
 import json
 import numpy as np # Need numpy for sqrt
@@ -25,12 +26,13 @@ router = APIRouter(prefix="/forecast", tags=["Forecast", "Chart", "Backtest"])
             summary="Get GARCH Forecast (JSON)") 
 def get_garch_forecast_json(symbol: str,
                        horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
-                       settings: Settings = Depends(get_settings)):
+                       settings: Settings = Depends(get_settings),
+                       db: Session = Depends(get_db)):
     """Endpoint to get GARCH(1,1) annualized volatility forecast for a symbol (returns JSON)."""
     try:
         # 1. Fetch data
         print(f"Fetching data for {symbol} (JSON endpoint)...")
-        df_prices = data_service.fetch_data(symbol, settings.fmp_api_key)
+        df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
         if df_prices is None or df_prices.empty:
             raise HTTPException(status_code=404,
                                 detail=f"Could not fetch valid historical data for {symbol} from FMP.")
@@ -77,12 +79,13 @@ def get_garch_forecast_json(symbol: str,
 async def get_garch_forecast_chart(request: Request, # Need Request for templates
                                  symbol: str,
                                  horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
-                                 settings: Settings = Depends(get_settings)):
+                                 settings: Settings = Depends(get_settings),
+                                 db: Session = Depends(get_db)):
     """Endpoint to display a chart of the GARCH(1,1) volatility forecast, including recent history."""
     try:
         # 1. Fetch data
         print(f"Fetching data for {symbol} (Chart endpoint)...")
-        df_prices = data_service.fetch_data(symbol, settings.fmp_api_key)
+        df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
         if df_prices is None or df_prices.empty:
             # Return an HTML error page or message
              return templates.TemplateResponse("error.html", {"request": request, "detail": f"Could not fetch data for {symbol}"}, status_code=404)
@@ -165,12 +168,13 @@ async def get_garch_forecast_chart(request: Request, # Need Request for template
 async def get_garch_backtest_chart(request: Request,
                                   symbol: str,
                                   window: int = Query(default=252, ge=50, description="Rolling window size for backtest (min 50)"),
-                                  settings: Settings = Depends(get_settings)):
+                                  settings: Settings = Depends(get_settings),
+                                  db: Session = Depends(get_db)):
     """Endpoint to perform and display walk-forward GARCH backtest results."""
     try:
         # 1. Fetch data
         print(f"Fetching data for {symbol} (Backtest endpoint)...")
-        df_prices = data_service.fetch_data(symbol, settings.fmp_api_key)
+        df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
         if df_prices is None or df_prices.empty:
              return templates.TemplateResponse("error.html", {"request": request, "detail": f"Could not fetch data for {symbol}"}, status_code=404)
         if 'Close' not in df_prices.columns:
