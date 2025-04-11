@@ -9,4 +9,5 @@ pydantic-settings
 jinja2
 tqdm
 sqlalchemy
-alembic 
+alembic
+scipy>=1.10.0 
