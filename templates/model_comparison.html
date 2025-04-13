@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GARCH Model Comparison - {{ symbol }}</title>
+    <!-- Chart.js for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Bootstrap for styling -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        .chart-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .info-card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .metrics-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .metric-card {
+            flex: 1;
+            min-width: 150px;
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #495057;
+        }
+        .model-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+        h1 {
+            color: #343a40;
+            margin-bottom: 20px;
+        }
+        h2, h3, h4 {
+            color: #495057;
+        }
+        .explanation {
+            font-size: 0.9rem;
+            margin-top: 5px;
+            color: #6c757d;
+        }
+        .model-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+        }
+        .model-card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .best-model {
+            border: 2px solid #28a745;
+            background-color: #f8fff8;
+        }
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .model-title {
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        .model-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .model-metric {
+            background-color: #f1f3f5;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        .best-model-badge {
+            background-color: #28a745;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        .date-range {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f1f8ff;
+            border-radius: 5px;
+            text-align: center;
+            color: #0366d6;
+            font-weight: 500;
+        }
+        .forecast-chart-container {
+            height: 300px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center">GARCH Model Comparison</h1>
+        
+        <div class="info-card">
+            <div class="row">
+                <div class="col-md-6">
+                    <h3>Symbol: {{ symbol }}</h3>
+                    <p>Training Period: {{ training_days }} trading days</p>
+                    <p>Forecast Horizon: {{ horizon }} days</p>
+                    {% if date_range %}
+                    <div class="date-range">
+                        <i class="bi bi-calendar-range"></i> Data Range: {{ date_range }}
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
+                    <div class="model-info">
+                        <h5>Best Model</h5>
+                        <p>{{ best_model.description }}</p>
+                        <div class="metrics-row">
+                            <div class="metric-card">
+                                <h5>AIC</h5>
+                                <div class="metric-value">{{ best_model.aic | round(2) }}</div>
+                            </div>
+                            <div class="metric-card">
+                                <h5>BIC</h5>
+                                <div class="metric-value">{{ best_model.bic | round(2) }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Models Comparison Section -->
+        <div class="chart-container">
+            <h3>Model Performance Comparison</h3>
+            <canvas id="performance-comparison-chart"></canvas>
+        </div>
+        
+        <!-- Forecast Comparison Chart -->
+        <div class="chart-container forecast-chart-container">
+            <h3>Volatility Forecast Comparison</h3>
+            <canvas id="forecast-comparison-chart"></canvas>
+        </div>
+        
+        <!-- Models Details Section -->
+        <div class="info-card">
+            <h3>Model Details</h3>
+            
+            {% for model in models %}
+            <div class="model-card {% if model.is_best %}best-model{% endif %}">
+                <div class="model-header">
+                    <div class="model-title">{{ model.description }}</div>
+                    {% if model.is_best %}
+                    <div class="best-model-badge">Best Model</div>
+                    {% endif %}
+                </div>
+                
+                <div class="model-metrics">
+                    <div class="model-metric">AIC: {{ model.aic | round(2) }}</div>
+                    <div class="model-metric">BIC: {{ model.bic | round(2) }}</div>
+                    <div class="model-metric">Log-Likelihood: {{ model.loglikelihood | round(2) }}</div>
+                    {% if model.rmse %}
+                    <div class="model-metric">RMSE: {{ model.rmse | round(4) }}</div>
+                    {% endif %}
+                    {% if model.mae %}
+                    <div class="model-metric">MAE: {{ model.mae | round(4) }}</div>
+                    {% endif %}
+                </div>
+                
+                <div class="mt-3">
+                    <p><strong>Parameters:</strong></p>
+                    <pre>{{ model.params }}</pre>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <div class="info-card">
+                    <h3>About Model Comparison</h3>
+                    <p>This analysis compares different GARCH model specifications to find the best fit for {{ symbol }}:</p>
+                    <ul>
+                        <li><strong>AIC (Akaike Information Criterion):</strong> Measures how well a model fits the data with a penalty for complexity. Lower is better.</li>
+                        <li><strong>BIC (Bayesian Information Criterion):</strong> Similar to AIC but with a stronger penalty for model complexity. Lower is better.</li>
+                        <li><strong>Log-Likelihood:</strong> The log of the likelihood function, indicating how well the model represents the data. Higher is better.</li>
+                        <li><strong>RMSE:</strong> Root Mean Squared Error of forecast (if available). Lower is better.</li>
+                        <li><strong>MAE:</strong> Mean Absolute Error of forecast (if available). Lower is better.</li>
+                    </ul>
+                    <p><strong>Recommendation:</strong> The model with the lowest BIC value is generally recommended for forecasting as it balances fit quality with model simplicity.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Parse data from the server
+        const modelsData = JSON.parse('{{ models_data | safe }}');
+        const forecastData = JSON.parse('{{ forecast_data | safe }}');
+        
+        // Create performance comparison chart (bar chart)
+        const perfCtx = document.getElementById('performance-comparison-chart').getContext('2d');
+        new Chart(perfCtx, {
+            type: 'bar',
+            data: {
+                labels: modelsData.map(m => m.label),
+                datasets: [
+                    {
+                        label: 'AIC',
+                        data: modelsData.map(m => m.aic),
+                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'BIC',
+                        data: modelsData.map(m => m.bic),
+                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        title: {
+                            display: true,
+                            text: 'Information Criteria (lower is better)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    title: {
+                        display: true,
+                        text: 'Model Selection Metrics'
+                    }
+                }
+            }
+        });
+        
+        // Create forecast comparison chart
+        const fcstCtx = document.getElementById('forecast-comparison-chart').getContext('2d');
+        
+        // Generate a distinct color for each model
+        function getModelColor(index, opacity=1) {
+            const colors = [
+                `rgba(54, 162, 235, ${opacity})`,   // blue
+                `rgba(255, 99, 132, ${opacity})`,   // red
+                `rgba(75, 192, 192, ${opacity})`,   // green
+                `rgba(255, 159, 64, ${opacity})`,   // orange
+                `rgba(153, 102, 255, ${opacity})`,  // purple
+                `rgba(255, 205, 86, ${opacity})`,   // yellow
+                `rgba(201, 203, 207, ${opacity})`,  // grey
+                // Add more colors if needed
+            ];
+            return colors[index % colors.length];
+        }
+        
+        // Create datasets for each model's forecast
+        const forecastDatasets = forecastData.forecasts.map((forecast, i) => {
+            return {
+                label: forecast.model_label,
+                data: forecast.values,
+                borderColor: getModelColor(i),
+                backgroundColor: getModelColor(i, 0.1),
+                borderWidth: forecast.is_best ? 3 : 2,
+                pointRadius: forecast.is_best ? 4 : 3,
+                tension: 0.1
+            };
+        });
+        
+        new Chart(fcstCtx, {
+            type: 'line',
+            data: {
+                labels: forecastData.dates,
+                datasets: forecastDatasets
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Annualized Volatility (%)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Forecast Horizon (Days)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    title: {
+                        display: true,
+                        text: 'Volatility Forecast Comparison by Model'
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html> 

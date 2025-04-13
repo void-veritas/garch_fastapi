@@ -347,3 +347,140 @@ def backtest_garch_forecast(prices: pd.Series,
     print(f"Performance metrics - MSE: {mse:.4f}, MAE: {mae:.4f}, VaR hit rate: {var_hits:.2%}")
     
     return backtest_results 
+
+def compare_garch_models(returns: pd.Series, 
+                        models_to_compare: List[Dict] = None,
+                        horizon: int = 10,
+                        training_days: int = 252) -> Dict:
+    """Compares multiple GARCH model specifications and forecasts.
+    
+    Args:
+        returns: Series of historical returns with DatetimeIndex
+        models_to_compare: List of model specifications to compare, each containing:
+                           {'vol_model': str, 'p': int, 'q': int, 'dist': str}
+                           If None, a default set of common models will be used
+        horizon: Number of days to forecast for all models
+        training_days: Number of training days to use (most recent)
+        
+    Returns:
+        Dictionary containing:
+        - 'models': List of fitted model details with metrics
+        - 'best_model': The best model based on BIC
+        - 'forecasts': Dictionary with forecast data for all models
+    """
+    # Default set of models if none provided
+    if models_to_compare is None:
+        models_to_compare = [
+            {'vol_model': 'Garch', 'p': 1, 'q': 1, 'dist': 'Normal'},
+            {'vol_model': 'Garch', 'p': 1, 'q': 1, 'dist': 'StudentsT'},
+            {'vol_model': 'GJR', 'p': 1, 'q': 1, 'dist': 'Normal'},
+            {'vol_model': 'GJR', 'p': 1, 'q': 1, 'dist': 'StudentsT'},
+            {'vol_model': 'EGARCH', 'p': 1, 'q': 1, 'dist': 'Normal'},
+            {'vol_model': 'EGARCH', 'p': 1, 'q': 1, 'dist': 'StudentsT'}
+        ]
+    
+    # Use the most recent training_days of returns
+    if len(returns) > training_days:
+        train_returns = returns.iloc[-training_days:]
+    else:
+        train_returns = returns
+        
+    print(f"Comparing {len(models_to_compare)} GARCH models using {len(train_returns)} days of returns")
+    
+    fitted_models = []
+    best_model = None
+    best_bic = np.inf
+    
+    # Fit each model and collect metrics
+    for i, model_spec in enumerate(models_to_compare):
+        model_label = f"{model_spec['vol_model']}({model_spec['p']},{model_spec['q']})-{model_spec['dist']}"
+        print(f"Fitting model {i+1}/{len(models_to_compare)}: {model_label}")
+        
+        try:
+            model_fit = fit_garch_model(
+                train_returns, 
+                p=model_spec['p'], 
+                q=model_spec['q'], 
+                vol_model=model_spec['vol_model'],
+                dist=model_spec['dist']
+            )
+            
+            if model_fit is not None:
+                # Extract model information
+                model_info = {
+                    'description': model_label,
+                    'aic': model_fit.aic,
+                    'bic': model_fit.bic,
+                    'loglikelihood': model_fit.loglikelihood,
+                    'params': str(model_fit.params),
+                    'model_fit': model_fit,  # Store the actual model fit object
+                    'spec': model_spec
+                }
+                
+                # Check if this is the best model so far (based on BIC)
+                if model_fit.bic < best_bic:
+                    best_bic = model_fit.bic
+                    best_model = model_info.copy()
+                
+                fitted_models.append(model_info)
+                
+        except Exception as e:
+            print(f"Error fitting model {model_label}: {e}")
+            continue
+    
+    if not fitted_models:
+        print("No models were successfully fitted.")
+        return None
+    
+    # Mark the best model
+    for model in fitted_models:
+        model['is_best'] = (model['bic'] == best_bic)
+    
+    # Generate forecasts for all successfully fitted models
+    forecasts_data = {
+        'dates': [],
+        'forecasts': []
+    }
+    
+    # Create forecast dates (for x-axis)
+    last_date = train_returns.index[-1]
+    forecast_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=horizon)
+    forecasts_data['dates'] = [date.strftime('%Y-%m-%d') for date in forecast_dates]
+    
+    # Generate forecasts for each model
+    for model in fitted_models:
+        try:
+            forecast_df = forecast_volatility(model['model_fit'], horizon=horizon)
+            
+            if forecast_df is not None and not forecast_df.empty:
+                forecast_values = forecast_df['Forecasted_Annualized_Volatility'].tolist()
+                
+                forecasts_data['forecasts'].append({
+                    'model_label': model['description'],
+                    'values': [round(x, 2) for x in forecast_values],
+                    'is_best': model['is_best']
+                })
+                
+        except Exception as e:
+            print(f"Error forecasting with model {model['description']}: {e}")
+            continue
+    
+    # Prepare final result (removing model_fit objects which aren't JSON serializable)
+    result_models = []
+    for model in fitted_models:
+        model_copy = model.copy()
+        if 'model_fit' in model_copy:
+            del model_copy['model_fit']
+        result_models.append(model_copy)
+    
+    best_model_copy = None
+    if best_model:
+        best_model_copy = best_model.copy()
+        if 'model_fit' in best_model_copy:
+            del best_model_copy['model_fit']
+    
+    return {
+        'models': result_models,
+        'best_model': best_model_copy,
+        'forecasts': forecasts_data
+    } 

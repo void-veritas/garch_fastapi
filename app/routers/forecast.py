@@ -539,3 +539,121 @@ async def get_multi_horizon_analysis(
             return templates.TemplateResponse("error.html", {"request": request, "detail": f"An unexpected server error occurred: {str(e)}"}, status_code=500)
         except:
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}") 
+
+@router.get("/compare-models/{symbol}", 
+           response_class=HTMLResponse,
+           summary="Compare different GARCH model specifications")
+async def compare_garch_models(
+    request: Request,
+    symbol: str,
+    horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
+    training_days: int = Query(default=252, ge=60, le=1000, description="Number of days for model training"),
+    custom_models: Optional[str] = Query(None, description="Custom model specifications in JSON format"),
+    include_gjr: bool = Query(default=True, description="Include GJR-GARCH models"),
+    include_egarch: bool = Query(default=True, description="Include EGARCH models"),
+    include_t_dist: bool = Query(default=True, description="Include Student's t distribution"),
+    settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db)
+):
+    """Endpoint to compare different GARCH model specifications and identify the best model."""
+    try:
+        # 1. Fetch data
+        print(f"Fetching data for {symbol} (Model Comparison endpoint)...")
+        df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
+        if df_prices is None or df_prices.empty:
+             return templates.TemplateResponse("error.html", {"request": request, "detail": f"Could not fetch data for {symbol}"}, status_code=404)
+        if 'Close' not in df_prices.columns:
+             return templates.TemplateResponse("error.html", {"request": request, "detail": "'Close' column missing"}, status_code=500)
+        
+        if len(df_prices) < training_days:
+            return templates.TemplateResponse("error.html", 
+                                             {"request": request, "detail": f"Not enough data for {symbol}. Need at least {training_days} days."}, 
+                                             status_code=400)
+
+        # 2. Calculate Returns
+        print(f"Calculating returns for {symbol}...")
+        returns = garch_service.calculate_returns(df_prices['Close'])
+        if returns.empty:
+             return templates.TemplateResponse("error.html", {"request": request, "detail": "Failed to calculate returns."}, status_code=500)
+
+        # 3. Prepare model specifications to compare
+        models_to_compare = []
+        
+        # Parse custom models if provided
+        if custom_models:
+            try:
+                models_to_compare = json.loads(custom_models)
+                print(f"Using {len(models_to_compare)} custom model specifications")
+            except json.JSONDecodeError:
+                return templates.TemplateResponse("error.html", 
+                                                {"request": request, "detail": "Invalid JSON format for custom models"}, 
+                                                status_code=400)
+        else:
+            # Build model specifications based on user options
+            vol_models = ['Garch']
+            if include_gjr:
+                vol_models.append('GJR')
+            if include_egarch:
+                vol_models.append('EGARCH')
+                
+            distributions = ['Normal']
+            if include_t_dist:
+                distributions.append('StudentsT')
+                
+            # Create combinations of p=1,2 and q=1 for each model type and distribution
+            for vol_model in vol_models:
+                for dist in distributions:
+                    models_to_compare.append({'vol_model': vol_model, 'p': 1, 'q': 1, 'dist': dist})
+                    models_to_compare.append({'vol_model': vol_model, 'p': 2, 'q': 1, 'dist': dist})
+            
+            print(f"Generated {len(models_to_compare)} model specifications to compare")
+
+        # 4. Run model comparison
+        comparison_results = garch_service.compare_garch_models(
+            returns,
+            models_to_compare=models_to_compare,
+            horizon=horizon,
+            training_days=training_days
+        )
+        
+        if comparison_results is None or not comparison_results['models']:
+            return templates.TemplateResponse("error.html", 
+                                             {"request": request, "detail": "No valid models could be fitted."}, 
+                                             status_code=500)
+
+        # 5. Prepare data for charts
+        # Data for performance comparison chart
+        models_chart_data = []
+        for model in comparison_results['models']:
+            models_chart_data.append({
+                'label': model['description'],
+                'aic': round(model['aic'], 2),
+                'bic': round(model['bic'], 2),
+                'is_best': model['is_best']
+            })
+        
+        # 6. Render template with all data
+        date_range = f"{df_prices.index[0].strftime('%Y-%m-%d')} to {df_prices.index[-1].strftime('%Y-%m-%d')}"
+        
+        return templates.TemplateResponse(
+            "model_comparison.html",
+            {
+                "request": request,
+                "symbol": symbol,
+                "horizon": horizon,
+                "training_days": training_days,
+                "date_range": date_range,
+                "best_model": comparison_results['best_model'],
+                "models": comparison_results['models'],
+                "models_data": json.dumps(models_chart_data),
+                "forecast_data": json.dumps(comparison_results['forecasts'])
+            }
+        )
+        
+    except Exception as e:
+        import traceback
+        print(f"An unexpected error occurred for {symbol} (Model Comparison): {e}")
+        traceback.print_exc()
+        return templates.TemplateResponse("error.html", 
+                                         {"request": request, "detail": f"An unexpected error occurred: {str(e)}"}, 
+                                         status_code=500) 

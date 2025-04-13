@@ -69,6 +69,21 @@
             height: 250px;
             margin-top: 20px;
         }
+        .accuracy-highlights {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e8f4f8;
+            border-radius: 5px;
+            font-size: 0.95rem;
+        }
+        .highlight-good {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .highlight-bad {
+            color: #dc3545;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -107,6 +122,32 @@
                     <div class="explanation">Systematic over/under prediction</div>
                 </div>
             </div>
+            
+            <div class="accuracy-highlights">
+                <h5>Forecast Accuracy Assessment:</h5>
+                <ul>
+                    {% if metrics.bias > 0 %}
+                    <li>This model tends to <span class="highlight-bad">overestimate</span> volatility by an average of {{ metrics.bias }} percentage points.</li>
+                    {% else %}
+                    <li>This model tends to <span class="highlight-bad">underestimate</span> volatility by an average of {{ metrics.bias|abs }} percentage points.</li>
+                    {% endif %}
+                    
+                    {% if metrics.rmse < 10 %}
+                    <li>Forecast accuracy is <span class="highlight-good">good</span> with RMSE below 10.</li>
+                    {% elif metrics.rmse < 20 %}
+                    <li>Forecast accuracy is <span class="highlight-good">moderate</span> with RMSE between 10-20.</li>
+                    {% else %}
+                    <li>Forecast accuracy is <span class="highlight-bad">poor</span> with RMSE above 20.</li>
+                    {% endif %}
+                </ul>
+                <p><strong>Recommendation:</strong> 
+                {% if metrics.rmse < 15 and metrics.bias|abs < 5 %}
+                This model is suitable for production use.
+                {% else %}
+                Consider testing alternative GARCH specifications or parameter values.
+                {% endif %}
+                </p>
+            </div>
         </div>
         
         <div class="chart-container">
@@ -125,7 +166,7 @@
                     <ul>
                         <li><strong>Predicted Volatility (blue line):</strong> Average annualized volatility forecast over each {{ horizon }}-day period.</li>
                         <li><strong>Actual Volatility (red line):</strong> Realized volatility calculated from actual returns over the same {{ horizon }}-day periods.</li>
-                        <li><strong>Forecast Error (yellow bars):</strong> The difference between predicted and actual volatility (positive means overestimation).</li>
+                        <li><strong>Forecast Error (yellow/green bars):</strong> The difference between predicted and actual volatility. Yellow bars indicate overestimation, green bars indicate underestimation.</li>
                     </ul>
                     <p><strong>Key Findings:</strong></p>
                     <ul>
@@ -140,7 +181,7 @@
     <script>
         // Parse data from the server
         const horizonData = JSON.parse('{{ horizon_data | safe }}');
-        const horizon = {{ horizon }};
+        const horizonDays = {{ horizon }};
         
         // Extract data
         const dates = horizonData.dates;
@@ -156,7 +197,7 @@
                 labels: dates,
                 datasets: [
                     {
-                        label: horizon + '-Day Average Forecast Volatility',
+                        label: horizonDays + '-Day Average Forecast Volatility',
                         data: avgForecasts,
                         borderColor: 'rgba(54, 162, 235, 1)',
                         backgroundColor: 'rgba(54, 162, 235, 0.2)',
@@ -165,7 +206,7 @@
                         order: 1
                     },
                     {
-                        label: horizon + '-Day Realized Volatility',
+                        label: horizonDays + '-Day Realized Volatility',
                         data: actualVols,
                         borderColor: 'rgba(255, 99, 132, 1)',
                         backgroundColor: 'rgba(255, 99, 132, 0.2)',
@@ -180,7 +221,7 @@
                 plugins: {
                     title: {
                         display: true,
-                        text: horizon + '-Day Horizon Analysis: Averaged Forecasts vs. Actual Volatility',
+                        text: horizonDays + '-Day Horizon Analysis: Averaged Forecasts vs. Actual Volatility',
                         font: {
                             size: 16
                         }
