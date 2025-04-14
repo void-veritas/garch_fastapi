@@ -10,6 +10,23 @@ import numpy as np # Need numpy for sqrt
 from typing import Optional, List
 from datetime import datetime, timedelta
 
+# Helper function for safe date formatting
+def format_date_safely(date_obj):
+    """Helper function to safely format dates as strings regardless of type."""
+    if date_obj is None:
+        return None
+        
+    # Convert to datetime if it's a date object
+    if hasattr(date_obj, 'strftime'):
+        return date_obj.strftime('%Y-%m-%d')
+    
+    # If it's already a string, return it
+    if isinstance(date_obj, str):
+        return date_obj
+    
+    # Last resort, convert to string
+    return str(date_obj)
+
 # Removed sys path modification and import from main
 # import sys
 # from pathlib import Path
@@ -30,8 +47,8 @@ router = APIRouter(prefix="/forecast", tags=["Forecast", "Chart", "Backtest"])
 def get_garch_forecast_json(
     symbol: str,
     horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
-    p: int = Query(default=1, ge=1, le=3, description="ARCH parameter (p)"),
-    q: int = Query(default=1, ge=1, le=3, description="GARCH parameter (q)"),
+    p: str = Query(default="1", description="ARCH parameter (p)"),
+    q: str = Query(default="1", description="GARCH parameter (q)"),
     vol_model: str = Query(default="Garch", description="Volatility model (Garch, EGARCH, GJR)"),
     distribution: str = Query(default="Normal", description="Error distribution (Normal, StudentsT, SkewStudent)"),
     auto_select: bool = Query(default=False, description="Auto-select the best model specification"),
@@ -42,6 +59,20 @@ def get_garch_forecast_json(
 ):
     """Endpoint to get GARCH volatility forecast for a symbol (returns JSON)."""
     try:
+        # Sanitize p and q inputs - remove any commas and convert to integers
+        try:
+            p_clean = int(p.replace(',', ''))
+            q_clean = int(q.replace(',', ''))
+            # Validate ranges
+            if p_clean < 1 or p_clean > 3:
+                p_clean = 1
+            if q_clean < 1 or q_clean > 3:
+                q_clean = 1
+        except (ValueError, AttributeError):
+            # Default to 1,1 if conversion fails
+            p_clean = 1
+            q_clean = 1
+            
         # 1. Fetch data
         print(f"Fetching data for {symbol} (JSON endpoint)...")
         df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
@@ -53,9 +84,41 @@ def get_garch_forecast_json(
 
         # Filter by date range if provided
         if start_date:
-            df_prices = df_prices.loc[start_date:]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(start_date, str):
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(start_date, 'date') and callable(getattr(start_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(start_date, datetime):
+                        start_date = datetime.combine(start_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index >= pd.Timestamp(start_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing start_date {start_date}: {e}")
+                # If there's an error, don't filter by this date
         if end_date:
-            df_prices = df_prices.loc[:end_date]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(end_date, str):
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(end_date, 'date') and callable(getattr(end_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(end_date, datetime):
+                        end_date = datetime.combine(end_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index <= pd.Timestamp(end_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing end_date {end_date}: {e}")
+                # If there's an error, don't filter by this date
             
         if df_prices.empty:
             raise HTTPException(status_code=404, detail=f"No data available for {symbol} in the specified date range.")
@@ -75,10 +138,14 @@ def get_garch_forecast_json(
             model_fit = model_result['model']
             model_params = model_result['params']
             model_description = f"{model_params['vol_model']}({model_params['p']},{model_params['q']}) with {model_params['dist']} distribution"
+            p = model_params['p']  # For subsequent volatility calculation
+            q = model_params['q']
+            vol_model = model_params['vol_model']
+            distribution = model_params['dist']
         else:
-            print(f"Fitting {vol_model}({p},{q}) model with {distribution} distribution for {symbol}...")
-            model_fit = garch_service.fit_garch_model(returns, p=p, q=q, vol_model=vol_model, dist=distribution)
-            model_description = f"{vol_model}({p},{q}) with {distribution} distribution"
+            print(f"Fitting {vol_model}({p_clean},{q_clean}) model with {distribution} distribution for {symbol}...")
+            model_fit = garch_service.fit_garch_model(returns, p=p_clean, q=q_clean, vol_model=vol_model, dist=distribution)
+            model_description = f"{vol_model}({p_clean},{q_clean}) with {distribution} distribution"
             
         if model_fit is None:
              raise HTTPException(status_code=500, detail=f"Failed to fit GARCH model for {symbol}.")
@@ -107,8 +174,8 @@ def get_garch_forecast_json(
             "forecast_horizon": horizon, 
             "model": model_description,
             "date_range": {
-                "start": start_date or df_prices.index[0].strftime('%Y-%m-%d'),
-                "end": end_date or df_prices.index[-1].strftime('%Y-%m-%d')
+                "start": format_date_safely(start_date) if start_date else format_date_safely(df_prices.index[0]),
+                "end": format_date_safely(end_date) if end_date else format_date_safely(df_prices.index[-1])
             },
             "forecast": forecast_list,
             "risk_metrics": {
@@ -134,8 +201,8 @@ async def get_garch_forecast_chart(
     request: Request,
     symbol: str,
     horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
-    p: int = Query(default=1, ge=1, le=3, description="ARCH parameter (p)"),
-    q: int = Query(default=1, ge=1, le=3, description="GARCH parameter (q)"),
+    p: str = Query(default="1", description="ARCH parameter (p)"),
+    q: str = Query(default="1", description="GARCH parameter (q)"),
     vol_model: str = Query(default="Garch", description="Volatility model (Garch, EGARCH, GJR)"),
     distribution: str = Query(default="Normal", description="Error distribution (Normal, StudentsT, SkewStudent)"),
     auto_select: bool = Query(default=False, description="Auto-select the best model specification"),
@@ -146,6 +213,20 @@ async def get_garch_forecast_chart(
 ):
     """Endpoint to display a chart of the GARCH volatility forecast with confidence intervals."""
     try:
+        # Sanitize p and q inputs - remove any commas and convert to integers
+        try:
+            p_clean = int(p.replace(',', ''))
+            q_clean = int(q.replace(',', ''))
+            # Validate ranges
+            if p_clean < 1 or p_clean > 3:
+                p_clean = 1
+            if q_clean < 1 or q_clean > 3:
+                q_clean = 1
+        except (ValueError, AttributeError):
+            # Default to 1,1 if conversion fails
+            p_clean = 1
+            q_clean = 1
+            
         # 1. Fetch data
         print(f"Fetching data for {symbol} (Chart endpoint)...")
         df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
@@ -156,9 +237,41 @@ async def get_garch_forecast_chart(
 
         # Filter by date range if provided
         if start_date:
-            df_prices = df_prices.loc[start_date:]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(start_date, str):
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(start_date, 'date') and callable(getattr(start_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(start_date, datetime):
+                        start_date = datetime.combine(start_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index >= pd.Timestamp(start_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing start_date {start_date}: {e}")
+                # If there's an error, don't filter by this date
         if end_date:
-            df_prices = df_prices.loc[:end_date]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(end_date, str):
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(end_date, 'date') and callable(getattr(end_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(end_date, datetime):
+                        end_date = datetime.combine(end_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index <= pd.Timestamp(end_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing end_date {end_date}: {e}")
+                # If there's an error, don't filter by this date
             
         if df_prices.empty:
             return templates.TemplateResponse("error.html", {"request": request, "detail": f"No data available for {symbol} in the specified date range"}, status_code=404)
@@ -183,9 +296,9 @@ async def get_garch_forecast_chart(
             vol_model = model_params['vol_model']
             distribution = model_params['dist']
         else:
-            print(f"Fitting {vol_model}({p},{q}) model with {distribution} distribution for {symbol}...")
-            model_fit = garch_service.fit_garch_model(returns, p=p, q=q, vol_model=vol_model, dist=distribution)
-            model_description = f"{vol_model}({p},{q}) with {distribution} distribution"
+            print(f"Fitting {vol_model}({p_clean},{q_clean}) model with {distribution} distribution for {symbol}...")
+            model_fit = garch_service.fit_garch_model(returns, p=p_clean, q=q_clean, vol_model=vol_model, dist=distribution)
+            model_description = f"{vol_model}({p_clean},{q_clean}) with {distribution} distribution"
             
         if model_fit is None:
             return templates.TemplateResponse("error.html", {"request": request, "detail": f"Failed to fit GARCH model for {symbol}"}, status_code=500)
@@ -233,9 +346,20 @@ async def get_garch_forecast_chart(
         # 6d. Get date range info
         date_range_str = ""
         if start_date or end_date:
-            start_str = start_date or df_prices.index[0].strftime('%Y-%m-%d')
-            end_str = end_date or df_prices.index[-1].strftime('%Y-%m-%d')
+            # Format dates safely for display
+            if start_date:
+                start_str = format_date_safely(start_date)
+            else:
+                start_str = format_date_safely(df_prices.index[0])
+            
+            if end_date:
+                end_str = format_date_safely(end_date)
+            else:
+                end_str = format_date_safely(df_prices.index[-1])
+            
             date_range_str = f"{start_str} to {end_str}"
+        else:
+            date_range_str = f"{format_date_safely(df_prices.index[0])} to {format_date_safely(df_prices.index[-1])}"
         
         # 6e. Convert data to JSON strings for embedding
         hist_data_json = json.dumps(hist_list)
@@ -274,8 +398,8 @@ async def get_garch_backtest_chart(
     request: Request,
     symbol: str,
     window: int = Query(default=252, ge=50, description="Rolling window size for backtest (min 50)"),
-    p: int = Query(default=1, ge=1, le=3, description="ARCH parameter (p)"),
-    q: int = Query(default=1, ge=1, le=3, description="GARCH parameter (q)"),
+    p: str = Query(default="1", description="ARCH parameter (p)"),
+    q: str = Query(default="1", description="GARCH parameter (q)"),
     vol_model: str = Query(default="Garch", description="Volatility model (Garch, EGARCH, GJR)"),
     distribution: str = Query(default="Normal", description="Error distribution (Normal, StudentsT, SkewStudent)"),
     auto_select: bool = Query(default=False, description="Auto-select model at each step"),
@@ -286,6 +410,20 @@ async def get_garch_backtest_chart(
 ):
     """Endpoint to perform and display walk-forward GARCH backtest results with performance metrics."""
     try:
+        # Sanitize p and q inputs - remove any commas and convert to integers
+        try:
+            p_clean = int(p.replace(',', ''))
+            q_clean = int(q.replace(',', ''))
+            # Validate ranges
+            if p_clean < 1 or p_clean > 3:
+                p_clean = 1
+            if q_clean < 1 or q_clean > 3:
+                q_clean = 1
+        except (ValueError, AttributeError):
+            # Default to 1,1 if conversion fails
+            p_clean = 1
+            q_clean = 1
+            
         # 1. Fetch data
         print(f"Fetching data for {symbol} (Backtest endpoint)...")
         df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
@@ -296,20 +434,52 @@ async def get_garch_backtest_chart(
 
         # Filter by date range if provided
         if start_date:
-            df_prices = df_prices.loc[start_date:]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(start_date, str):
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(start_date, 'date') and callable(getattr(start_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(start_date, datetime):
+                        start_date = datetime.combine(start_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index >= pd.Timestamp(start_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing start_date {start_date}: {e}")
+                # If there's an error, don't filter by this date
         if end_date:
-            df_prices = df_prices.loc[:end_date]
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(end_date, str):
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(end_date, 'date') and callable(getattr(end_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(end_date, datetime):
+                        end_date = datetime.combine(end_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index <= pd.Timestamp(end_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing end_date {end_date}: {e}")
+                # If there's an error, don't filter by this date
             
         if df_prices.empty:
             return templates.TemplateResponse("error.html", {"request": request, "detail": f"No data available for {symbol} in the specified date range"}, status_code=404)
 
         # 2. Run Backtest Service with enhanced parameters
-        print(f"Running backtest for {symbol} with window {window} and {'auto-select' if auto_select else f'{vol_model}({p},{q})'} model...")
+        print(f"Running backtest for {symbol} with window {window} and {'auto-select' if auto_select else f'{vol_model}({p_clean},{q_clean})'} model...")
         backtest_results_df = garch_service.backtest_garch_forecast(
             df_prices['Close'], 
             window_size=window,
-            p=p, 
-            q=q,
+            p=p_clean, 
+            q=q_clean,
             vol_model=vol_model,
             dist=distribution,
             auto_select=auto_select
@@ -338,7 +508,7 @@ async def get_garch_backtest_chart(
             model_counts = backtest_results_df['Model_Used'].value_counts().to_dict()
             top_models = sorted(model_counts.items(), key=lambda x: x[1], reverse=True)[:3]
         else:
-            top_models = [(f"{vol_model}({p},{q})-{distribution}", len(backtest_results_df))]
+            top_models = [(f"{vol_model}({p_clean},{q_clean})-{distribution}", len(backtest_results_df))]
         
         # 4. Prepare data for template
         # Limit the data sent to the template if it's very long (e.g., last 2 years = ~500 points)
@@ -359,9 +529,20 @@ async def get_garch_backtest_chart(
         # Get date range info
         date_range_str = ""
         if start_date or end_date:
-            start_str = start_date or df_prices.index[0].strftime('%Y-%m-%d')
-            end_str = end_date or df_prices.index[-1].strftime('%Y-%m-%d')
+            # Format dates safely for display
+            if start_date:
+                start_str = format_date_safely(start_date)
+            else:
+                start_str = format_date_safely(df_prices.index[0])
+            
+            if end_date:
+                end_str = format_date_safely(end_date)
+            else:
+                end_str = format_date_safely(df_prices.index[-1])
+            
             date_range_str = f"{start_str} to {end_str}"
+        else:
+            date_range_str = f"{format_date_safely(df_prices.index[0])} to {format_date_safely(df_prices.index[-1])}"
             
         # Convert to JSON for template
         backtest_data_json = json.dumps(backtest_list)
@@ -405,8 +586,8 @@ async def get_multi_horizon_analysis(
     symbol: str,
     horizon: int = Query(default=5, ge=1, le=30, description="Forecast horizon length (days)"),
     lookback_days: int = Query(default=30, ge=5, le=365, description="Number of days to analyze"),
-    p: int = Query(default=1, ge=1, le=3, description="ARCH parameter (p)"),
-    q: int = Query(default=1, ge=1, le=3, description="GARCH parameter (q)"),
+    p: str = Query(default="1", description="ARCH parameter (p)"),
+    q: str = Query(default="1", description="GARCH parameter (q)"),
     vol_model: str = Query(default="Garch", description="Volatility model (Garch, EGARCH, GJR)"),
     distribution: str = Query(default="Normal", description="Error distribution (Normal, StudentsT)"),
     auto_select: bool = Query(default=False, description="Auto-select the best model specification"),
@@ -415,6 +596,20 @@ async def get_multi_horizon_analysis(
 ):
     """Endpoint to analyze multiple time points with 5-day forecasts, and compare averages with actuals."""
     try:
+        # Sanitize p and q inputs - remove any commas and convert to integers
+        try:
+            p_clean = int(p.replace(',', ''))
+            q_clean = int(q.replace(',', ''))
+            # Validate ranges
+            if p_clean < 1 or p_clean > 3:
+                p_clean = 1
+            if q_clean < 1 or q_clean > 3:
+                q_clean = 1
+        except (ValueError, AttributeError):
+            # Default to 1,1 if conversion fails
+            p_clean = 1
+            q_clean = 1
+            
         # 1. Fetch data
         print(f"Fetching data for {symbol} (Horizon Analysis endpoint)...")
         df_prices = db_service.get_or_fetch_stock_data(db, symbol, settings.fmp_api_key)
@@ -460,7 +655,7 @@ async def get_multi_horizon_analysis(
                 model_result = garch_service.model_selection(train_returns, max_p=2, max_q=2)
                 model_fit = model_result['model']
             else:
-                model_fit = garch_service.fit_garch_model(train_returns, p=p, q=q, 
+                model_fit = garch_service.fit_garch_model(train_returns, p=p_clean, q=q_clean, 
                                                          vol_model=vol_model, dist=distribution)
             
             if model_fit:
@@ -510,7 +705,7 @@ async def get_multi_horizon_analysis(
         horizon_analysis_json = json.dumps(horizon_analysis_data)
         
         # Create a nice title for the chart
-        model_description = "Auto-selected" if auto_select else f"{vol_model}({p},{q}) with {distribution} distribution"
+        model_description = "Auto-selected" if auto_select else f"{vol_model}({p_clean},{q_clean}) with {distribution} distribution"
         
         # Render the template
         return templates.TemplateResponse(
@@ -552,6 +747,8 @@ async def compare_garch_models(
     include_gjr: bool = Query(default=True, description="Include GJR-GARCH models"),
     include_egarch: bool = Query(default=True, description="Include EGARCH models"),
     include_t_dist: bool = Query(default=True, description="Include Student's t distribution"),
+    start_date: Optional[str] = Query(None, description="Start date for the data (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date for the data (YYYY-MM-DD)"),
     settings: Settings = Depends(get_settings),
     db: Session = Depends(get_db)
 ):
@@ -565,6 +762,44 @@ async def compare_garch_models(
         if 'Close' not in df_prices.columns:
              return templates.TemplateResponse("error.html", {"request": request, "detail": "'Close' column missing"}, status_code=500)
         
+        # Apply date filtering if provided
+        if start_date:
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(start_date, str):
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(start_date, 'date') and callable(getattr(start_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(start_date, datetime):
+                        start_date = datetime.combine(start_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index >= pd.Timestamp(start_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing start_date {start_date}: {e}")
+                # If there's an error, don't filter by this date
+        if end_date:
+            try:
+                # Ensure we have a datetime.datetime object
+                if isinstance(end_date, str):
+                    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                # Make sure we're using datetime.datetime objects for comparison (not date objects)
+                if hasattr(end_date, 'date') and callable(getattr(end_date, 'date')):
+                    # Convert any datetime.date to datetime.datetime at midnight
+                    if not isinstance(end_date, datetime):
+                        end_date = datetime.combine(end_date, datetime.min.time())
+                
+                # Use a boolean mask for comparison to avoid type issues
+                mask = df_prices.index <= pd.Timestamp(end_date)
+                df_prices = df_prices[mask]
+            except Exception as e:
+                print(f"Error processing end_date {end_date}: {e}")
+                # If there's an error, don't filter by this date
+            
         if len(df_prices) < training_days:
             return templates.TemplateResponse("error.html", 
                                              {"request": request, "detail": f"Not enough data for {symbol}. Need at least {training_days} days."}, 
@@ -633,7 +868,22 @@ async def compare_garch_models(
             })
         
         # 6. Render template with all data
-        date_range = f"{df_prices.index[0].strftime('%Y-%m-%d')} to {df_prices.index[-1].strftime('%Y-%m-%d')}"
+        date_range_str = ""
+        if start_date or end_date:
+            # Format dates safely for display
+            if start_date:
+                start_str = format_date_safely(start_date)
+            else:
+                start_str = format_date_safely(df_prices.index[0])
+            
+            if end_date:
+                end_str = format_date_safely(end_date)
+            else:
+                end_str = format_date_safely(df_prices.index[-1])
+            
+            date_range_str = f"{start_str} to {end_str}"
+        else:
+            date_range_str = f"{format_date_safely(df_prices.index[0])} to {format_date_safely(df_prices.index[-1])}"
         
         return templates.TemplateResponse(
             "model_comparison.html",
@@ -642,7 +892,7 @@ async def compare_garch_models(
                 "symbol": symbol,
                 "horizon": horizon,
                 "training_days": training_days,
-                "date_range": date_range,
+                "date_range": date_range_str,
                 "best_model": comparison_results['best_model'],
                 "models": comparison_results['models'],
                 "models_data": json.dumps(models_chart_data),

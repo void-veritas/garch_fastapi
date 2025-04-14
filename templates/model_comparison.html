@@ -127,6 +127,63 @@
     <div class="container">
         <h1 class="text-center">GARCH Model Comparison</h1>
         
+        <!-- Date Range and Training Window Form -->
+        <div class="info-card mb-4">
+            <form method="GET" action="/forecast/compare-models/{{ symbol }}" id="modelComparisonForm">
+                <div class="row g-3 align-items-center">
+                    <div class="col-md-3">
+                        <label for="training_days" class="form-label">Training Window (Days):</label>
+                        <input type="number" class="form-control" id="training_days" name="training_days" 
+                               value="{{ training_days }}" min="60" max="1000">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="horizon" class="form-label">Forecast Horizon (Days):</label>
+                        <input type="number" class="form-control" id="horizon" name="horizon" 
+                               value="{{ horizon }}" min="1" max="30">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="start_date" class="form-label">Start Date:</label>
+                        <input type="date" class="form-control" id="start_date" name="start_date">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="end_date" class="form-label">End Date:</label>
+                        <input type="date" class="form-control" id="end_date" name="end_date">
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="include_gjr" name="include_gjr" {% if include_gjr %}checked{% endif %}>
+                            <label class="form-check-label" for="include_gjr">
+                                Include GJR-GARCH Models
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="include_egarch" name="include_egarch" {% if include_egarch %}checked{% endif %}>
+                            <label class="form-check-label" for="include_egarch">
+                                Include EGARCH Models
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="include_t_dist" name="include_t_dist" {% if include_t_dist %}checked{% endif %}>
+                            <label class="form-check-label" for="include_t_dist">
+                                Include Student's t Distribution
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-12 text-center">
+                        <button type="submit" class="btn btn-primary">Update Analysis</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
         <div class="info-card">
             <div class="row">
                 <div class="col-md-6">
@@ -222,120 +279,201 @@
     </div>
     
     <script>
-        // Parse data from the server
-        const modelsData = JSON.parse('{{ models_data | safe }}');
+        // Initialize performance comparison chart
+        const performanceChartData = JSON.parse('{{ models_data | safe }}');
+        
+        const labels = performanceChartData.map(model => model.label);
+        const aicValues = performanceChartData.map(model => model.aic);
+        const bicValues = performanceChartData.map(model => model.bic);
+        const bestModelIndex = performanceChartData.findIndex(model => model.is_best);
+        
+        const aicBackgroundColors = labels.map((_, index) => 
+            index === bestModelIndex ? 'rgba(40, 167, 69, 0.6)' : 'rgba(54, 162, 235, 0.6)'
+        );
+        
+        const bicBackgroundColors = labels.map((_, index) => 
+            index === bestModelIndex ? 'rgba(40, 167, 69, 0.6)' : 'rgba(255, 99, 132, 0.6)'
+        );
+        
+        new Chart(
+            document.getElementById('performance-comparison-chart'),
+            {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'AIC',
+                            data: aicValues,
+                            backgroundColor: aicBackgroundColors,
+                            borderColor: aicBackgroundColors.map(color => color.replace('0.6', '1')),
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'BIC',
+                            data: bicValues,
+                            backgroundColor: bicBackgroundColors,
+                            borderColor: bicBackgroundColors.map(color => color.replace('0.6', '1')),
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'Information Criteria (Lower is Better)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Model Specification'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Model Information Criteria (Lower is Better)'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const index = context.dataIndex;
+                                    if (performanceChartData[index].is_best) {
+                                        return '✅ Best Model';
+                                    }
+                                    return '';
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        );
+        
+        // Initialize forecast comparison chart
         const forecastData = JSON.parse('{{ forecast_data | safe }}');
         
-        // Create performance comparison chart (bar chart)
-        const perfCtx = document.getElementById('performance-comparison-chart').getContext('2d');
-        new Chart(perfCtx, {
-            type: 'bar',
-            data: {
-                labels: modelsData.map(m => m.label),
-                datasets: [
-                    {
-                        label: 'AIC',
-                        data: modelsData.map(m => m.aic),
-                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        borderWidth: 1
+        if (forecastData && forecastData.dates && forecastData.forecasts) {
+            const forecastDatasets = forecastData.forecasts.map(forecast => {
+                const isBest = forecast.is_best;
+                return {
+                    label: forecast.model_label,
+                    data: forecast.values,
+                    borderColor: isBest ? 'rgba(40, 167, 69, 1)' : 'rgba(54, 162, 235, 0.7)',
+                    backgroundColor: 'transparent',
+                    borderWidth: isBest ? 3 : 2,
+                    pointRadius: isBest ? 4 : 3,
+                    tension: 0.1
+                };
+            });
+            
+            new Chart(
+                document.getElementById('forecast-comparison-chart'),
+                {
+                    type: 'line',
+                    data: {
+                        labels: forecastData.dates,
+                        datasets: forecastDatasets
                     },
-                    {
-                        label: 'BIC',
-                        data: modelsData.map(m => m.bic),
-                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
-                        borderColor: 'rgba(255, 99, 132, 1)',
-                        borderWidth: 1
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: false,
-                        title: {
-                            display: true,
-                            text: 'Information Criteria (lower is better)'
+                    options: {
+                        responsive: true,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                title: {
+                                    display: true,
+                                    text: 'Annualized Volatility (%)'
+                                }
+                            },
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: 'Forecast Date'
+                                }
+                            }
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Volatility Forecast Comparison'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    afterLabel: function(context) {
+                                        const index = context.datasetIndex;
+                                        if (forecastData.forecasts[index].is_best) {
+                                            return '✅ Best Model';
+                                        }
+                                        return '';
+                                    }
+                                }
+                            }
                         }
                     }
-                },
-                plugins: {
-                    legend: {
-                        position: 'top',
-                    },
-                    title: {
-                        display: true,
-                        text: 'Model Selection Metrics'
-                    }
                 }
-            }
-        });
-        
-        // Create forecast comparison chart
-        const fcstCtx = document.getElementById('forecast-comparison-chart').getContext('2d');
-        
-        // Generate a distinct color for each model
-        function getModelColor(index, opacity=1) {
-            const colors = [
-                `rgba(54, 162, 235, ${opacity})`,   // blue
-                `rgba(255, 99, 132, ${opacity})`,   // red
-                `rgba(75, 192, 192, ${opacity})`,   // green
-                `rgba(255, 159, 64, ${opacity})`,   // orange
-                `rgba(153, 102, 255, ${opacity})`,  // purple
-                `rgba(255, 205, 86, ${opacity})`,   // yellow
-                `rgba(201, 203, 207, ${opacity})`,  // grey
-                // Add more colors if needed
-            ];
-            return colors[index % colors.length];
+            );
         }
         
-        // Create datasets for each model's forecast
-        const forecastDatasets = forecastData.forecasts.map((forecast, i) => {
-            return {
-                label: forecast.model_label,
-                data: forecast.values,
-                borderColor: getModelColor(i),
-                backgroundColor: getModelColor(i, 0.1),
-                borderWidth: forecast.is_best ? 3 : 2,
-                pointRadius: forecast.is_best ? 4 : 3,
-                tension: 0.1
-            };
-        });
-        
-        new Chart(fcstCtx, {
-            type: 'line',
-            data: {
-                labels: forecastData.dates,
-                datasets: forecastDatasets
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Annualized Volatility (%)'
-                        }
-                    },
-                    x: {
-                        title: {
-                            display: true,
-                            text: 'Forecast Horizon (Days)'
-                        }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        position: 'top',
-                    },
-                    title: {
-                        display: true,
-                        text: 'Volatility Forecast Comparison by Model'
-                    }
+        // Initialize date range inputs
+        document.addEventListener('DOMContentLoaded', function() {
+            // Parse the date range string if available
+            const dateRangeElement = document.querySelector('.date-range');
+            let startDate = null;
+            let endDate = null;
+            
+            if (dateRangeElement) {
+                const dateRangeText = dateRangeElement.textContent.trim();
+                const dateRangeMatch = dateRangeText.match(/Data Range: (.+) to (.+)/);
+                
+                if (dateRangeMatch && dateRangeMatch.length === 3) {
+                    startDate = dateRangeMatch[1].trim();
+                    endDate = dateRangeMatch[2].trim();
                 }
             }
+            
+            // Get URL parameters
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlStartDate = urlParams.get('start_date');
+            const urlEndDate = urlParams.get('end_date');
+            
+            // Set input values from URL or parsed range
+            const startDateInput = document.getElementById('start_date');
+            const endDateInput = document.getElementById('end_date');
+            
+            if (startDateInput && (urlStartDate || startDate)) {
+                startDateInput.value = urlStartDate || formatDateForInput(startDate);
+            }
+            
+            if (endDateInput && (urlEndDate || endDate)) {
+                endDateInput.value = urlEndDate || formatDateForInput(endDate);
+            }
         });
+        
+        // Helper to format date string for input element
+        function formatDateForInput(dateStr) {
+            if (!dateStr) return '';
+            
+            // Try to parse the date
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return '';
+            
+            // Format as YYYY-MM-DD for input element
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            
+            return `${year}-${month}-${day}`;
+        }
     </script>
 </body>
 </html> 
