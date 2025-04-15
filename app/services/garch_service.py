@@ -123,48 +123,79 @@ def forecast_volatility(model_fit: 'arch.univariate.ARCHModelResult',
         print("Cannot forecast: Invalid model fit object.")
         return None
     try:
-        # Forecast conditional variance with confidence intervals
-        forecast = model_fit.forecast(horizon=horizon, reindex=False, method='simulation', 
-                                     simulations=10000)
+        # Forecast conditional variance
+        forecast = model_fit.forecast(horizon=horizon, reindex=False)
         
         # The forecast object contains variance forecasts
         variance_forecast = forecast.variance
         
-        # Compute confidence intervals for volatility
-        sim_data = np.sqrt(forecast._forecasts['variance'].values) * np.sqrt(252)
-        
-        # Calculate quantiles for confidence intervals
-        lower_quantile = alpha / 2
-        upper_quantile = 1 - (alpha / 2)
-        
-        # Create confidence intervals for volatility
-        ci_lower = np.percentile(sim_data, lower_quantile * 100, axis=1)
-        ci_upper = np.percentile(sim_data, upper_quantile * 100, axis=1)
-        
-        # Convert daily variance to annualized volatility
-        # Annualized Volatility = sqrt(variance * 252)
+        # Convert daily variance to annualized volatility (sqrt(variance * 252))
         # 252 is the typical number of trading days in a year
-        mean_variance = variance_forecast.mean(axis=1)
-        annualized_volatility_forecast = np.sqrt(mean_variance * 252)
-
+        if isinstance(variance_forecast, pd.DataFrame):
+            # If we have a DataFrame with multiple columns (simulation method)
+            mean_variance = variance_forecast.mean(axis=1)
+            annualized_volatility_forecast = np.sqrt(mean_variance * 252)
+        else:
+            # If we have a single-column Series (mean forecasts)
+            annualized_volatility_forecast = np.sqrt(variance_forecast * 252)
+        
         # Create a DataFrame for the forecast
         # Generate future dates starting from the day after the last date in the original data
         last_date = model_fit.resid.index[-1]
         future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=horizon)
-
-        forecast_df = pd.DataFrame({
-            'Date': future_dates,
-            'Forecasted_Annualized_Volatility': annualized_volatility_forecast,
-            'CI_Lower': ci_lower.flatten(),
-            'CI_Upper': ci_upper.flatten()
-        })
-        forecast_df = forecast_df.set_index('Date')
+        
+        # Ensure all arrays have the same length
+        if len(annualized_volatility_forecast) != len(future_dates):
+            print(f"Warning: Forecast length mismatch. Resizing forecast to match {len(future_dates)} dates.")
+            # If the forecast length doesn't match horizon, adjust it
+            if len(annualized_volatility_forecast) > len(future_dates):
+                annualized_volatility_forecast = annualized_volatility_forecast[:len(future_dates)]
+            else:
+                # Pad with the last value
+                last_value = annualized_volatility_forecast.iloc[-1] if hasattr(annualized_volatility_forecast, 'iloc') else annualized_volatility_forecast[-1]
+                padding = [last_value] * (len(future_dates) - len(annualized_volatility_forecast))
+                if isinstance(annualized_volatility_forecast, pd.Series):
+                    # For pandas Series
+                    padding_idx = pd.date_range(
+                        start=annualized_volatility_forecast.index[-1] + pd.Timedelta(days=1), 
+                        periods=len(padding)
+                    )
+                    padding_series = pd.Series(padding, index=padding_idx)
+                    annualized_volatility_forecast = pd.concat([annualized_volatility_forecast, padding_series])
+                else:
+                    # For numpy arrays
+                    annualized_volatility_forecast = np.append(annualized_volatility_forecast, padding)
+        
+        # Simple approximation for confidence intervals based on historical volatility
+        # Use standard deviation of returns to estimate volatility of volatility
+        returns_std = np.std(model_fit.resid)
+        z_score_lower = stats.norm.ppf(alpha / 2)
+        z_score_upper = stats.norm.ppf(1 - alpha / 2)
+        
+        # Create confidence intervals
+        if isinstance(annualized_volatility_forecast, pd.Series):
+            ci_lower = annualized_volatility_forecast + z_score_lower * returns_std * np.sqrt(252)
+            ci_upper = annualized_volatility_forecast + z_score_upper * returns_std * np.sqrt(252)
+        else:
+            ci_lower = annualized_volatility_forecast + z_score_lower * returns_std * np.sqrt(252)
+            ci_upper = annualized_volatility_forecast + z_score_upper * returns_std * np.sqrt(252)
+        
+        # Ensure CI doesn't go below zero
+        ci_lower = np.maximum(ci_lower, 0)
+        
+        # Create DataFrame with aligned lengths
+        forecast_df = pd.DataFrame(index=future_dates)
+        forecast_df['Forecasted_Annualized_Volatility'] = annualized_volatility_forecast
+        forecast_df['CI_Lower'] = ci_lower
+        forecast_df['CI_Upper'] = ci_upper
 
         print(f"Generated volatility forecast for {horizon} steps with {(1-alpha)*100}% confidence intervals.")
         return forecast_df
 
     except Exception as e:
         print(f"Error forecasting volatility: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def calculate_risk_metrics(volatility: pd.Series, returns: pd.Series, confidence_level: float = 0.95) -> Dict:
@@ -434,7 +465,7 @@ def compare_garch_models(returns: pd.Series,
     
     # Mark the best model
     for model in fitted_models:
-        model['is_best'] = (model['bic'] == best_bic)
+        model['is_best'] = 1 if (model['bic'] == best_bic) else 0
     
     # Generate forecasts for all successfully fitted models
     forecasts_data = {
@@ -458,7 +489,7 @@ def compare_garch_models(returns: pd.Series,
                 forecasts_data['forecasts'].append({
                     'model_label': model['description'],
                     'values': [round(x, 2) for x in forecast_values],
-                    'is_best': model['is_best']
+                    'is_best': 1 if model['is_best'] else 0
                 })
                 
         except Exception as e:

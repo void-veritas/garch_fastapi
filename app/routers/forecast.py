@@ -164,11 +164,27 @@ def get_garch_forecast_json(
         )
 
         # 6. Format and return the forecast as JSON
-        forecast_list = forecast_df.reset_index().to_dict(orient='records')
-        for record in forecast_list:
-            record['Date'] = record['Date'].strftime('%Y-%m-%d')
+        forecast_list = []
+        for date, row in forecast_df.iterrows():
+            # Handle NaN values by replacing them with None or default values
+            volatility = round(float(row['Forecasted_Annualized_Volatility']), 2) if not pd.isna(row['Forecasted_Annualized_Volatility']) else 0
+            ci_lower = round(float(row['CI_Lower']), 2) if not pd.isna(row['CI_Lower']) else volatility * 0.9
+            ci_upper = round(float(row['CI_Upper']), 2) if not pd.isna(row['CI_Upper']) else volatility * 1.1
+            
+            forecast_list.append({
+                'Date': date.strftime('%Y-%m-%d'),
+                'Forecasted_Annualized_Volatility': volatility,
+                'CI_Lower': ci_lower,
+                'CI_Upper': ci_upper
+            })
             
         print(f"Successfully generated JSON forecast for {symbol}.")
+
+        # Handle NaN values in risk metrics
+        var_value = round(float(risk_metrics['VaR'].iloc[0]), 4) if not pd.isna(risk_metrics['VaR'].iloc[0]) else 0
+        es_value = round(float(risk_metrics['ES'].iloc[0]), 4) if not pd.isna(risk_metrics['ES'].iloc[0]) else 0
+        rmse_value = float(risk_metrics['RMSE']) if not pd.isna(risk_metrics['RMSE']) else None
+
         return {
             "symbol": symbol, 
             "forecast_horizon": horizon, 
@@ -179,9 +195,9 @@ def get_garch_forecast_json(
             },
             "forecast": forecast_list,
             "risk_metrics": {
-                "VaR_95": float(risk_metrics['VaR'].iloc[0]),
-                "ES_95": float(risk_metrics['ES'].iloc[0]),
-                "RMSE": float(risk_metrics['RMSE'])
+                "VaR_95": var_value,
+                "ES_95": es_value,
+                "RMSE": rmse_value
             }
         }
 
@@ -331,17 +347,23 @@ async def get_garch_forecast_chart(
             record['Date'] = record['Date'].strftime('%Y-%m-%d') 
         
         # 6b. Format forecast data with confidence intervals
-        forecast_list = forecast_df.reset_index().to_dict(orient='records')
-        for record in forecast_list:
-            record['Date'] = record['Date'].strftime('%Y-%m-%d')
-            # Round values for display
-            record['Forecasted_Annualized_Volatility'] = round(record['Forecasted_Annualized_Volatility'], 2)
-            record['CI_Lower'] = round(record['CI_Lower'], 2)
-            record['CI_Upper'] = round(record['CI_Upper'], 2)
+        forecast_list = []
+        for date, row in forecast_df.iterrows():
+            # Handle NaN values by replacing them with None or default values
+            volatility = round(float(row['Forecasted_Annualized_Volatility']), 2) if not pd.isna(row['Forecasted_Annualized_Volatility']) else 0
+            ci_lower = round(float(row['CI_Lower']), 2) if not pd.isna(row['CI_Lower']) else volatility * 0.9
+            ci_upper = round(float(row['CI_Upper']), 2) if not pd.isna(row['CI_Upper']) else volatility * 1.1
+            
+            forecast_list.append({
+                'Date': date.strftime('%Y-%m-%d'),
+                'Forecasted_Annualized_Volatility': volatility,
+                'CI_Lower': ci_lower,
+                'CI_Upper': ci_upper
+            })
         
-        # 6c. Format risk metrics
-        var_value = round(float(risk_metrics['VaR'].iloc[0]), 4)
-        es_value = round(float(risk_metrics['ES'].iloc[0]), 4)
+        # 6c. Format risk metrics - handle NaN values
+        var_value = round(float(risk_metrics['VaR'].iloc[0]), 4) if not pd.isna(risk_metrics['VaR'].iloc[0]) else 0
+        es_value = round(float(risk_metrics['ES'].iloc[0]), 4) if not pd.isna(risk_metrics['ES'].iloc[0]) else 0
         
         # 6d. Get date range info
         date_range_str = ""
@@ -896,7 +918,10 @@ async def compare_garch_models(
                 "best_model": comparison_results['best_model'],
                 "models": comparison_results['models'],
                 "models_data": json.dumps(models_chart_data),
-                "forecast_data": json.dumps(comparison_results['forecasts'])
+                "forecast_data": json.dumps(comparison_results['forecasts']),
+                "include_gjr": str(include_gjr).lower(),
+                "include_egarch": str(include_egarch).lower(),
+                "include_t_dist": str(include_t_dist).lower()
             }
         )
         
