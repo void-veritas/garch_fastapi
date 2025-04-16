@@ -9,6 +9,10 @@ import json
 import numpy as np # Need numpy for sqrt
 from typing import Optional, List
 from datetime import datetime, timedelta
+from app.schemas.forecast import (
+    ForecastResponse, ForecastParams, ForecastDataPoint, 
+    DateRange, RiskMetrics
+)
 
 # Helper function for safe date formatting
 def format_date_safely(date_obj):
@@ -42,23 +46,26 @@ router = APIRouter(prefix="/forecast", tags=["Forecast", "Chart", "Backtest"])
 
 # Enhanced parameters with proper model configuration
 @router.get("/{symbol}", 
-            response_model=None, 
+            response_model=ForecastResponse,
             summary="Get GARCH Forecast (JSON)") 
 def get_garch_forecast_json(
     symbol: str,
-    horizon: int = Query(default=10, ge=1, le=30, description="Forecast horizon in days (1-30)"),
-    p: str = Query(default="1", description="ARCH parameter (p)"),
-    q: str = Query(default="1", description="GARCH parameter (q)"),
-    vol_model: str = Query(default="Garch", description="Volatility model (Garch, EGARCH, GJR)"),
-    distribution: str = Query(default="Normal", description="Error distribution (Normal, StudentsT, SkewStudent)"),
-    auto_select: bool = Query(default=False, description="Auto-select the best model specification"),
-    start_date: Optional[str] = Query(None, description="Start date for the data (YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date for the data (YYYY-MM-DD)"),
+    forecast_params: ForecastParams = Depends(),
     settings: Settings = Depends(get_settings),
     db: Session = Depends(get_db)
 ):
     """Endpoint to get GARCH volatility forecast for a symbol (returns JSON)."""
     try:
+        # Extract parameters
+        horizon = forecast_params.horizon
+        p = forecast_params.p
+        q = forecast_params.q
+        vol_model = forecast_params.vol_model
+        distribution = forecast_params.distribution
+        auto_select = forecast_params.auto_select
+        start_date = forecast_params.start_date
+        end_date = forecast_params.end_date
+        
         # Sanitize p and q inputs - remove any commas and convert to integers
         try:
             p_clean = int(p.replace(',', ''))
@@ -163,43 +170,44 @@ def get_garch_forecast_json(
             confidence_level=0.95
         )
 
-        # 6. Format and return the forecast as JSON
-        forecast_list = []
+        # 6. Format and return the forecast with Pydantic model
+        forecast_data_points = []
         for date, row in forecast_df.iterrows():
-            # Handle NaN values by replacing them with None or default values
-            volatility = round(float(row['Forecasted_Annualized_Volatility']), 2) if not pd.isna(row['Forecasted_Annualized_Volatility']) else 0
-            ci_lower = round(float(row['CI_Lower']), 2) if not pd.isna(row['CI_Lower']) else volatility * 0.9
-            ci_upper = round(float(row['CI_Upper']), 2) if not pd.isna(row['CI_Upper']) else volatility * 1.1
-            
-            forecast_list.append({
-                'Date': date.strftime('%Y-%m-%d'),
-                'Forecasted_Annualized_Volatility': volatility,
-                'CI_Lower': ci_lower,
-                'CI_Upper': ci_upper
-            })
+            forecast_data_points.append(
+                ForecastDataPoint(
+                    Date=date.strftime('%Y-%m-%d'),
+                    Forecasted_Annualized_Volatility=row['Forecasted_Annualized_Volatility'],
+                    CI_Lower=row['CI_Lower'],
+                    CI_Upper=row['CI_Upper']
+                )
+            )
             
         print(f"Successfully generated JSON forecast for {symbol}.")
 
-        # Handle NaN values in risk metrics
-        var_value = round(float(risk_metrics['VaR'].iloc[0]), 4) if not pd.isna(risk_metrics['VaR'].iloc[0]) else 0
-        es_value = round(float(risk_metrics['ES'].iloc[0]), 4) if not pd.isna(risk_metrics['ES'].iloc[0]) else 0
-        rmse_value = float(risk_metrics['RMSE']) if not pd.isna(risk_metrics['RMSE']) else None
+        # Create date range
+        date_range = DateRange(
+            start=format_date_safely(start_date) if start_date else format_date_safely(df_prices.index[0]),
+            end=format_date_safely(end_date) if end_date else format_date_safely(df_prices.index[-1])
+        )
 
-        return {
-            "symbol": symbol, 
-            "forecast_horizon": horizon, 
-            "model": model_description,
-            "date_range": {
-                "start": format_date_safely(start_date) if start_date else format_date_safely(df_prices.index[0]),
-                "end": format_date_safely(end_date) if end_date else format_date_safely(df_prices.index[-1])
-            },
-            "forecast": forecast_list,
-            "risk_metrics": {
-                "VaR_95": var_value,
-                "ES_95": es_value,
-                "RMSE": rmse_value
-            }
-        }
+        # Create risk metrics
+        risk_metrics_model = RiskMetrics(
+            VaR_95=risk_metrics['VaR'].iloc[0] if 'VaR' in risk_metrics and not risk_metrics['VaR'].empty else None,
+            ES_95=risk_metrics['ES'].iloc[0] if 'ES' in risk_metrics and not risk_metrics['ES'].empty else None,
+            RMSE=risk_metrics['RMSE'] if 'RMSE' in risk_metrics else None
+        )
+
+        # Create the full response
+        response = ForecastResponse(
+            symbol=symbol,
+            forecast_horizon=horizon,
+            model=model_description,
+            date_range=date_range,
+            forecast=forecast_data_points,
+            risk_metrics=risk_metrics_model
+        )
+
+        return response
 
     except HTTPException as http_exc:
         print(f"HTTP Exception for {symbol} (JSON): {http_exc.detail}")
